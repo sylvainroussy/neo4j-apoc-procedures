@@ -1,17 +1,27 @@
 package apoc.load;
 
-import org.neo4j.procedure.Description;
 import apoc.result.RowResult;
 import apoc.ApocConfiguration;
 import apoc.util.MapUtil;
-
+import org.apache.commons.compress.utils.IOUtils;
 import org.neo4j.logging.Log;
 import org.neo4j.procedure.Context;
+import org.neo4j.procedure.Description;
 import org.neo4j.procedure.Name;
 import org.neo4j.procedure.Procedure;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import javax.security.auth.Subject;
+import javax.security.auth.callback.Callback;
+import javax.security.auth.callback.NameCallback;
+import javax.security.auth.callback.PasswordCallback;
+import javax.security.auth.login.LoginContext;
+import java.io.InputStream;
+import java.net.URI;
+import java.net.URL;
+import java.security.PrivilegedActionException;
+import java.security.PrivilegedExceptionAction;
 import java.sql.*;
 import java.util.*;
 import java.util.stream.Stream;
@@ -31,6 +41,15 @@ public class Jdbc {
 
     @Context
     public Log log;
+
+    private static Connection getConnection(String jdbcUrl) throws Exception {
+        URI uri = new URI(jdbcUrl.substring("jdbc:".length()));
+        String userInfo = uri.getUserInfo();
+        String[] user = userInfo != null ? userInfo.split(":"): new String[]{null, ""};
+        String cleanUrl = userInfo != null ? jdbcUrl.substring(0,jdbcUrl.indexOf("://")+3)+jdbcUrl.substring(jdbcUrl.indexOf("@")+1) : jdbcUrl;
+
+        return DriverManager.getConnection(cleanUrl, user[0], user[1]);
+    }
 
     @Procedure
     @Description("apoc.load.driver('org.apache.derby.jdbc.EmbeddedDriver') register JDBC driver of source database")
@@ -64,17 +83,27 @@ public class Jdbc {
         String url = urlOrKey.contains(":") ? urlOrKey : getJdbcUrl(urlOrKey);
         String query = tableOrSelect.indexOf(' ') == -1 ? "SELECT * FROM " + tableOrSelect : tableOrSelect;
         try {
-            Connection connection = DriverManager.getConnection(url);
-            PreparedStatement stmt = connection.prepareStatement(query);
-            for (int i = 0; i < params.length; i++) stmt.setObject(i+1, params[i]);
-            ResultSet rs = stmt.executeQuery();
-            rs.setFetchSize(5000);
-            Iterator<Map<String, Object>> supplier = new ResultSetIterator(log, rs,true);
-            Spliterator<Map<String, Object>> spliterator = Spliterators.spliteratorUnknownSize(supplier, Spliterator.ORDERED);
-            return StreamSupport.stream(spliterator, false)
-                    .map(RowResult::new)
-                    .onClose( () -> closeIt(log, stmt, connection));
-        } catch (SQLException e) {
+            Connection connection = getConnection(url);
+            try {
+                PreparedStatement stmt = connection.prepareStatement(query);
+                try {
+                    for (int i = 0; i < params.length; i++) stmt.setObject(i + 1, params[i]);
+                    ResultSet rs = stmt.executeQuery();
+                    rs.setFetchSize(5000);
+                    Iterator<Map<String, Object>> supplier = new ResultSetIterator(log, rs, true);
+                    Spliterator<Map<String, Object>> spliterator = Spliterators.spliteratorUnknownSize(supplier, Spliterator.ORDERED);
+                    return StreamSupport.stream(spliterator, false)
+                            .map(RowResult::new)
+                            .onClose(() -> closeIt(log, stmt, connection));
+                } catch (Exception sqle) {
+                    closeIt(log, stmt);
+                    throw sqle;
+                }
+            } catch(Exception sqle) {
+                closeIt(log, connection);
+                throw sqle;
+            }
+        } catch (Exception e) {
             log.error(String.format("Cannot execute SQL statement `%s`.%nError:%n%s", query, e.getMessage()),e);
             String errorMessage = "Cannot execute SQL statement `%s`.%nError:%n%s";
             if(e.getMessage().contains("No suitable driver")) errorMessage="Cannot execute SQL statement `%s`.%nError:%n%s%n%s";
@@ -92,15 +121,25 @@ public class Jdbc {
     private Stream<RowResult> executeUpdate(String urlOrKey, String query, Object...params) {
         String url = urlOrKey.contains(":") ? urlOrKey : getJdbcUrl(urlOrKey);
         try {
-            Connection connection = DriverManager.getConnection(url);
+            Connection connection = getConnection(url);
+            try {
             PreparedStatement stmt = connection.prepareStatement(query);
-            for (int i = 0; i < params.length; i++) stmt.setObject(i+1, params[i]);
-            int updateCount = stmt.executeUpdate();
-            closeIt(log, stmt, connection);
-            Map<String,Object> result = MapUtil.map( "count", updateCount );
-            return Stream.of( result )
-                    .map( RowResult::new );
-        } catch (SQLException e) {
+                try {
+                    for (int i = 0; i < params.length; i++) stmt.setObject(i + 1, params[i]);
+                    int updateCount = stmt.executeUpdate();
+                    closeIt(log, stmt, connection);
+                    Map<String, Object> result = MapUtil.map("count", updateCount);
+                    return Stream.of(result)
+                            .map(RowResult::new);
+                } catch(Exception sqle) {
+                    closeIt(log,stmt);
+                    throw sqle;
+                }
+            } catch(Exception sqle) {
+                closeIt(log,connection);
+                throw sqle;
+            }
+        } catch (Exception e) {
             log.error(String.format("Cannot execute SQL statement `%s`.%nError:%n%s", query, e.getMessage()),e);
             String errorMessage = "Cannot execute SQL statement `%s`.%nError:%n%s";
             if(e.getMessage().contains("No suitable driver")) errorMessage="Cannot execute SQL statement `%s`.%nError:%n%s%n%s";
@@ -172,7 +211,9 @@ public class Jdbc {
                     row.put(columns[col], convert(rs.getObject(col)));
                 }
                 return row;
-            } catch (SQLException e) {
+            } catch (Exception e) {
+                log.error(String.format("Cannot execute read result-set.%nError:%n%s", e.getMessage()),e);
+                closeRs();
                 throw new RuntimeException("Cannot execute read result-set.", e);
             }
         }
@@ -188,17 +229,34 @@ public class Jdbc {
         }
 
         private boolean handleEndOfResults() throws SQLException {
-            if (rs.isClosed()) {
+            Boolean closed = ignore(rs::isClosed);
+            if (closed!=null && closed) {
                 return true;
             }
             if (!rs.next()) {
-                if (!rs.isClosed()) {
-//                    rs.close();
-                    closeIt(log, rs.getStatement(), closeConnection ? rs.getStatement().getConnection() : null);
-                }
+                closeRs();
                 return true;
             }
             return false;
         }
+
+        private void closeRs() {
+            Boolean closed = ignore(rs::isClosed);
+            if (closed==null || !closed) {
+                closeIt(log, ignore(rs::getStatement), closeConnection ? ignore(()->rs.getStatement().getConnection()) : null);
+            }
+        }
+
+    }
+    interface FailingSupplier<T> {
+        T get() throws Exception;
+    }
+    public static <T> T ignore(FailingSupplier<T> fun) {
+        try {
+            return fun.get();
+        } catch(Exception e) {
+            /*ignore*/
+        }
+        return null;
     }
 }

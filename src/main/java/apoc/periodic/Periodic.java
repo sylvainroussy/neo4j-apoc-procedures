@@ -1,13 +1,13 @@
 package apoc.periodic;
 
-import org.neo4j.procedure.*;
 import apoc.Pools;
 import apoc.util.Util;
+import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.Result;
 import org.neo4j.helpers.collection.Iterators;
 import org.neo4j.kernel.api.KernelTransaction;
-import org.neo4j.kernel.internal.GraphDatabaseAPI;
 import org.neo4j.logging.Log;
+import org.neo4j.procedure.*;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -24,7 +24,7 @@ import static java.util.Collections.singletonMap;
 
 public class Periodic {
 
-    @Context public GraphDatabaseAPI db;
+    @Context public GraphDatabaseService db;
 
     @Context public Log log;
 
@@ -142,7 +142,7 @@ public class Periodic {
         return Stream.empty();
     }
 
-    @Procedure
+    @Procedure(mode = Mode.WRITE)
     @Description("apoc.periodic.submit('name',statement) - submit a one-off background statement")
     public Stream<JobInfo> submit(@Name("name") String name, @Name("statement") String statement) {
         JobInfo info = submit(name, () -> {
@@ -155,7 +155,7 @@ public class Periodic {
         return Stream.of(info);
     }
 
-    @Procedure
+    @Procedure(mode = Mode.WRITE)
     @Description("apoc.periodic.repeat('name',statement,repeat-rate-in-seconds) submit a repeatedly-called background statement")
     public Stream<JobInfo> repeat(@Name("name") String name, @Name("statement") String statement, @Name("rate") long rate) {
         JobInfo info = schedule(name, () -> Iterators.count(db.execute(statement)),0,rate);
@@ -244,7 +244,7 @@ public class Periodic {
      * @param cypherAction
      */
     @Procedure(mode = Mode.WRITE)
-    @Description("apoc.periodic.iterate('statement returning items', 'statement per item', {batchSize:1000,iterateList:false,parallel:true}) YIELD batches, total - run the second statement for each item returned by the first statement. Returns number of batches and total processed rows")
+    @Description("apoc.periodic.iterate('statement returning items', 'statement per item', {batchSize:1000,iterateList:true,parallel:false}) YIELD batches, total - run the second statement for each item returned by the first statement. Returns number of batches and total processed rows")
     public Stream<BatchAndTotalResult> iterate(
             @Name("cypherIterate") String cypherIterate,
             @Name("cypherAction") String cypherAction,
@@ -252,11 +252,12 @@ public class Periodic {
 
         long batchSize = Util.toLong(config.getOrDefault("batchSize", 10000));
         boolean parallel = Util.toBoolean(config.getOrDefault("parallel", false));
-        boolean iterateList = Util.toBoolean(config.getOrDefault("iterateList", false));
+        boolean iterateList = Util.toBoolean(config.getOrDefault("iterateList", true));
         long retries = Util.toLong(config.getOrDefault("retries", 0)); // todo sleep/delay or push to end of batch to try again or immediate ?
         Map<String,Object> params = (Map)config.getOrDefault("params", Collections.emptyMap());
         try (Result result = db.execute(cypherIterate,params)) {
             String innerStatement = prepareInnerStatement(cypherAction, iterateList, result.columns(), "_batch");
+            if (innerStatement.equals(cypherAction)) iterateList=false; // could not prepend UNWIND
             log.info("starting batching from `%s` operation using iteration `%s` in separate thread", cypherIterate,cypherAction);
             return iterateAndExecuteBatchedInSeparateThread((int)batchSize, parallel, iterateList, retries, result, (p) -> db.execute(innerStatement, merge(params, p)).close());
         }

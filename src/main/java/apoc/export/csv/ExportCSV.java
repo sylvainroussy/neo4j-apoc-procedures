@@ -1,25 +1,30 @@
 package apoc.export.csv;
 
 import apoc.Description;
-import apoc.export.util.*;
+import apoc.export.util.ExportConfig;
+import apoc.export.util.NodesAndRelsSubGraph;
+import apoc.export.util.ProgressReporter;
 import apoc.result.ProgressInfo;
 import apoc.util.Util;
-import au.com.bytecode.opencsv.CSVWriter;
 import org.neo4j.cypher.export.DatabaseSubGraph;
 import org.neo4j.cypher.export.SubGraph;
-import org.neo4j.graphdb.*;
+import org.neo4j.graphdb.GraphDatabaseService;
+import org.neo4j.graphdb.Node;
+import org.neo4j.graphdb.Relationship;
+import org.neo4j.graphdb.Result;
 import org.neo4j.procedure.Context;
 import org.neo4j.procedure.Name;
 import org.neo4j.procedure.Procedure;
 
 import java.io.PrintWriter;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
-import static apoc.export.util.FileUtils.checkWriteAllowed;
-import static apoc.export.util.FileUtils.getPrintWriter;
+import static apoc.util.FileUtils.checkWriteAllowed;
+import static apoc.util.FileUtils.getPrintWriter;
 
 /**
  * @author mh
@@ -62,9 +67,10 @@ public class ExportCSV {
     }
 
     @Procedure
-    @Description("apoc.export.csv.query(query,file,config) - exports results from the cypher statement as csv to the provided file")
+    @Description("apoc.export.csv.query(query,file,{config,...,params:{params}}) - exports results from the cypher statement as csv to the provided file")
     public Stream<ProgressInfo> query(@Name("query") String query, @Name("file") String fileName, @Name("config") Map<String, Object> config) throws Exception {
-        Result result = db.execute(query);
+        Map<String,Object> params = config == null ? Collections.emptyMap() : (Map<String,Object>)config.getOrDefault("params", Collections.emptyMap());
+        Result result = db.execute(query,params);
 
         String source = String.format("statement: cols(%d)", result.columns().size());
         return exportCsv(fileName, source,result,config);

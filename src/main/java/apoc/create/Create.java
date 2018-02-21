@@ -6,7 +6,6 @@ import apoc.result.*;
 import apoc.util.Util;
 import org.neo4j.graphdb.*;
 import org.neo4j.helpers.collection.Iterables;
-import org.neo4j.kernel.internal.GraphDatabaseAPI;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -34,7 +33,7 @@ public class Create {
     @Description("apoc.create.addLabels( [node,id,ids,nodes], ['Label',...]) - adds the given labels to the node or nodes")
     public Stream<NodeResult> addLabels(@Name("nodes") Object nodes, @Name("label") List<String> labelNames) {
         Label[] labels = Util.labels(labelNames);
-        return new Get((GraphDatabaseAPI) db).nodes(nodes).map((r) -> {
+        return new Get(db).nodes(nodes).map((r) -> {
             Node node = r.node;
             for (Label label : labels) {
                 node.addLabel(label);
@@ -46,16 +45,17 @@ public class Create {
     @Procedure(mode = Mode.WRITE)
     @Description("apoc.create.setProperty( [node,id,ids,nodes], key, value) - sets the given property on the node(s)")
     public Stream<NodeResult> setProperty(@Name("nodes") Object nodes, @Name("key") String key, @Name("value") Object value) {
-        return new Get((GraphDatabaseAPI) db).nodes(nodes).map((r) -> {
-            r.node.setProperty(key,toPropertyValue(value));
+        return new Get(db).nodes(nodes).map((r) -> {
+            setProperty(r.node, key,toPropertyValue(value));
             return r;
         });
     }
+
     @Procedure(mode = Mode.WRITE)
     @Description("apoc.create.setRelProperty( [rel,id,ids,rels], key, value) - sets the given property on the relationship(s)")
     public Stream<RelationshipResult> setRelProperty(@Name("relationships") Object rels, @Name("key") String key, @Name("value") Object value) {
-        return new Get((GraphDatabaseAPI) db).rels(rels).map((r) -> {
-            r.rel.setProperty(key,toPropertyValue(value));
+        return new Get(db).rels(rels).map((r) -> {
+            setProperty(r.rel,key,toPropertyValue(value));
             return r;
         });
     }
@@ -63,8 +63,16 @@ public class Create {
     @Procedure(mode = Mode.WRITE)
     @Description("apoc.create.setProperties( [node,id,ids,nodes], [keys], [values]) - sets the given property on the nodes(s)")
     public Stream<NodeResult> setProperties(@Name("nodes") Object nodes, @Name("keys") List<String> keys, @Name("values") List<Object> values) {
-        return new Get((GraphDatabaseAPI) db).nodes(nodes).map((r) -> {
+        return new Get(db).nodes(nodes).map((r) -> {
             setProperties(r.node, Util.mapFromLists(keys,values));
+            return r;
+        });
+    }
+    @Procedure(mode = Mode.WRITE)
+    @Description("apoc.create.removeProperties( [node,id,ids,nodes], [keys]) - removes the given property from the nodes(s)")
+    public Stream<NodeResult> removeProperties(@Name("nodes") Object nodes, @Name("keys") List<String> keys) {
+        return new Get(db).nodes(nodes).map((r) -> {
+            keys.forEach( r.node::removeProperty );
             return r;
         });
     }
@@ -72,8 +80,17 @@ public class Create {
     @Procedure(mode = Mode.WRITE)
     @Description("apoc.create.setRelProperties( [rel,id,ids,rels], [keys], [values]) - sets the given property on the relationship(s)")
     public Stream<RelationshipResult> setRelProperties(@Name("rels") Object rels, @Name("keys") List<String> keys, @Name("values") List<Object> values) {
-        return new Get((GraphDatabaseAPI) db).rels(rels).map((r) -> {
+        return new Get(db).rels(rels).map((r) -> {
             setProperties(r.rel, Util.mapFromLists(keys,values));
+            return r;
+        });
+    }
+
+    @Procedure(mode = Mode.WRITE)
+    @Description("apoc.create.removeRelProperties( [rel,id,ids,rels], [keys], [values]) - removes the given property from the relationship(s)")
+    public Stream<RelationshipResult> removeRelProperties(@Name("rels") Object rels, @Name("keys") List<String> keys) {
+        return new Get(db).rels(rels).map((r) -> {
+            keys.forEach( r.rel::removeProperty);
             return r;
         });
     }
@@ -82,7 +99,7 @@ public class Create {
     @Description("apoc.create.setLabels( [node,id,ids,nodes], ['Label',...]) - sets the given labels, non matching labels are removed on the node or nodes")
     public Stream<NodeResult> setLabels(@Name("nodes") Object nodes, @Name("label") List<String> labelNames) {
         Label[] labels = Util.labels(labelNames);
-        return new Get((GraphDatabaseAPI) db).nodes(nodes).map((r) -> {
+        return new Get(db).nodes(nodes).map((r) -> {
             Node node = r.node;
             for (Label label : node.getLabels()) {
                 if (labelNames.contains(label.name())) continue;
@@ -100,7 +117,7 @@ public class Create {
     @Description("apoc.create.removeLabels( [node,id,ids,nodes], ['Label',...]) - removes the given labels from the node or nodes")
     public Stream<NodeResult> removeLabels(@Name("nodes") Object nodes, @Name("label") List<String> labelNames) {
         Label[] labels = Util.labels(labelNames);
-        return new Get((GraphDatabaseAPI) db).nodes(nodes).map((r) -> {
+        return new Get(db).nodes(nodes).map((r) -> {
             Node node = r.node;
             for (Label label : labels) {
                 node.removeLabel(label);
@@ -181,8 +198,15 @@ public class Create {
 
     private <T extends PropertyContainer> T setProperties(T pc, Map<String, Object> p) {
         if (p == null) return pc;
-        for (Map.Entry<String, Object> entry : p.entrySet()) pc.setProperty(entry.getKey(), toPropertyValue(entry.getValue()));
+        for (Map.Entry<String, Object> entry : p.entrySet()) {
+            setProperty(pc, entry.getKey(), entry.getValue());
+        }
         return pc;
+    }
+
+    private <T extends PropertyContainer> void setProperty(T pc, String key, Object value) {
+        if (value == null) pc.removeProperty(key);
+        else pc.setProperty(key, toPropertyValue(value));
     }
 
     @UserFunction

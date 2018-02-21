@@ -1,5 +1,9 @@
 package apoc.text;
 
+import apoc.util.Util;
+import org.neo4j.graphdb.Node;
+import org.neo4j.graphdb.Relationship;
+import org.neo4j.helpers.collection.Pair;
 import org.neo4j.procedure.Description;
 import apoc.result.StringResult;
 import org.neo4j.procedure.Name;
@@ -12,12 +16,17 @@ import java.net.URLEncoder;
 import java.text.Normalizer;
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 import org.apache.commons.lang3.StringUtils;
 
+import static apoc.util.Util.quote;
 import static java.lang.Math.toIntExact;
 import static java.util.Arrays.asList;
 
@@ -101,7 +110,7 @@ public class Strings {
 
     @UserFunction
     @Description("apoc.text.distance(text1, text2) - compare the given strings with the StringUtils.distance(text1, text2) method")
-    public Long distance(final @Name("text1") String text1, @Name("text1")final String text2) {
+    public Long distance(final @Name("text1") String text1, @Name("text2")final String text2) {
         if (text1 == null || text2 == null) {
             return null;
         }
@@ -109,9 +118,18 @@ public class Strings {
     }
 
     @UserFunction
+    @Description("apoc.text.sorensenDiceSimilarityWithLanguage(text1, text2, languageTag) - compare the given strings with the Sørensen–Dice coefficient formula, with the provided IETF language tag")
+    public Double sorensenDiceSimilarity(final @Name("text1") String text1, final @Name("text2") String text2, final @Name(value = "languageTag", defaultValue = "en") String languageTag) {
+        if (text1 == null || text2 == null || languageTag == null) {
+            return null;
+        }
+        return SorensenDiceCoefficient.compute(text1, text2, languageTag);
+    }
+
+    @UserFunction
     @Description("apoc.text.fuzzyMatch(text1, text2) - check if 2 words can be matched in a fuzzy way. Depending on the" +
-                 " length of the String it will allow more characters that needs to be editted to match the second String.")
-    public Boolean fuzzyMatch(final @Name("text1") String text1, @Name("text1")final String text2) {
+                 " length of the String it will allow more characters that needs to be edited to match the second String.")
+    public Boolean fuzzyMatch(final @Name("text1") String text1, @Name("text2")final String text2) {
         if (text1 == null || text2 == null) {
             return null;
         }
@@ -362,5 +380,92 @@ public class Strings {
     public String base64Decode(@Name("text") String text) {
         byte[] decoded = Base64.getDecoder().decode(text.getBytes());
         return new String(decoded);
+    }
+
+    @UserFunction
+    @Description("apoc.text.charAt(text, index) - the decimal value of the character at the given index")
+    public Long charAt(@Name("text") String text, @Name("index") Long index) {
+        if (index == null || text == null || text.isEmpty() || index < 0 || index >= text.length()) {
+            return null;
+        }
+        return ((long) text.charAt(index.intValue()));
+    }
+
+    @UserFunction
+    @Description("apoc.text.code(codepoint) - Returns the unicode character of the given codepoint")
+    public String code(@Name("codepoint") Long codepoint) {
+        if (codepoint == null || codepoint < 0 || codepoint > Character.MAX_VALUE) {
+            return null;
+        }
+        return String.valueOf((char)codepoint.intValue());
+    }
+
+    @UserFunction
+    @Description("apoc.text.hexValue(value) - the hex value string of the given number")
+    public String hexValue(@Name("value") Long value) {
+        if (value == null) {
+            return null;
+        }
+        return value > 0xFFFFFFFFL ? String.format("%016X", value) : value > 0xFFFFL ?  String.format("%08X", (int)value.intValue()) : String.format("%04X", (int)value.intValue());
+    }
+
+    @UserFunction
+    @Description("apoc.text.hexCharAt(text, index) - the hex value string of the character at the given index")
+    public String hexCharAt(@Name("text") String text, @Name("index") Long index) {
+        return hexValue(charAt(text, index));
+    }
+
+    private boolean isPrimitive(Object value) {
+        return value == null || value instanceof String || value instanceof Number || value instanceof Boolean;
+    }
+
+    private String cypherName(Map<String,Object> config, String key, Supplier<String> s, Function<String,String> quoter) {
+        Object name = config.get(key);
+        if (name!=null) return quoter.apply(name.toString());
+        return s.get();
+    }
+
+    @UserFunction
+    @Description("apoc.text.toCypher(value, {skipKeys,keepKeys,skipValues,keepValues,skipNull,node,relationship,start,end}) | tries it's best to convert the value to a cypher-property-string")
+    public String toCypher(@Name("value") Object value, @Name(value = "config",defaultValue = "{}") Map<String,Object> config) {
+        if (config.containsKey("keepValues") && !((Collection)config.get("keepValues")).stream().noneMatch((v) -> (v.getClass().isInstance(value) || isPrimitive(value) && isPrimitive(v)) && !value.equals(v))) return null;
+        else if (config.containsKey("skipValues") && ((Collection) config.get("skipValues")).contains(value)) return null;
+
+        if (value==null) return "null";
+        if (value instanceof Number || value instanceof Boolean) return value.toString();
+        if (value instanceof String) return '\''+value.toString()+'\'';
+        if (value instanceof Iterable) return '['+StreamSupport.stream(((Iterable<?>)value).spliterator(),false).map(v -> toCypher(v,config)).filter(Objects::nonNull).collect(Collectors.joining(","))+']';
+        if (value.getClass().isArray()) return '['+Arrays.stream((Object[])value).map(v -> toCypher(v,config)).filter(Objects::nonNull).collect(Collectors.joining(","))+']';
+        if (value instanceof Node) {
+            Node node = (Node) value;
+            String labels = StreamSupport.stream(node.getLabels().spliterator(),false).map(l -> quote(l.name())).collect(Collectors.joining(":"));
+            if (!labels.isEmpty()) labels = ':'+labels;
+            String var = cypherName(config, "node", () -> "", Util::quote);
+            return '('+ var +labels+' '+ toCypher(node.getAllProperties(), config)+')';
+        }
+        if (value instanceof Relationship) {
+            Relationship rel = (Relationship) value;
+            String type = ':'+quote(rel.getType().name());
+            String start = cypherName(config, "start", () -> toCypher(rel.getStartNode(), config),(s)->'('+quote(s)+')');
+            String relationship = cypherName(config, "relationship", () -> "", Util::quote);
+            String end = cypherName(config,"end", ()->toCypher(rel.getEndNode(),config),(s)->'('+quote(s)+')');
+            return start+"-["+relationship+type+' '+ toCypher(rel.getAllProperties(), config)+"]->"+ end;
+        }
+        if (value instanceof Map) {
+            Map<String,Object> values = (Map<String, Object>) value;
+            if (config.containsKey("keepKeys")) {
+                values.keySet().retainAll((List<String>)(config.get("keepKeys")));
+            }
+            if (config.containsKey("skipKeys")) {
+                values.keySet().removeAll((List<String>)(config.get("skipKeys")));
+            }
+            return '{'+values.entrySet().stream()
+                    .map((e)-> Pair.of(e.getKey(), toCypher(e.getValue(),config)))
+                    .filter((p)->p.other() != null)
+                    .sorted(Comparator.comparing(Pair::first))
+                    .map((p) -> quote(p.first())+":"+p.other())
+                    .collect(Collectors.joining(","))+'}';
+        }
+        return null;
     }
 }

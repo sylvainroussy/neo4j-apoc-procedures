@@ -1,15 +1,13 @@
 package apoc.index;
 
 import apoc.ApocKernelExtensionFactory;
-import apoc.util.Util;
-import org.neo4j.index.impl.lucene.explicit.LuceneDataSource;
-import org.neo4j.kernel.KernelApi;
-import org.neo4j.procedure.*;
+import apoc.Pools;
 import apoc.result.WeightedNodeResult;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.search.Sort;
 import org.neo4j.graphdb.Label;
 import org.neo4j.graphdb.Node;
+import org.neo4j.graphdb.NotFoundException;
 import org.neo4j.graphdb.Transaction;
 import org.neo4j.graphdb.index.Index;
 import org.neo4j.graphdb.index.IndexHits;
@@ -17,9 +15,10 @@ import org.neo4j.index.impl.lucene.explicit.LuceneDataSource;
 import org.neo4j.index.impl.lucene.explicit.LuceneIndexImplementation;
 import org.neo4j.index.lucene.QueryContext;
 import org.neo4j.index.lucene.ValueContext;
-import org.neo4j.scheduler.JobScheduler;
 import org.neo4j.kernel.internal.GraphDatabaseAPI;
 import org.neo4j.logging.Log;
+import org.neo4j.procedure.*;
+import org.neo4j.scheduler.JobScheduler;
 
 import java.util.*;
 import java.util.concurrent.Executor;
@@ -106,9 +105,21 @@ public class FreeTextSearch {
         if (maxNumberOfresults!=-1) {
             queryParam = queryParam.top((int)maxNumberOfresults);
         }
-        List<WeightedNodeResult> hits = KernelApi.toWeightedNodeResultFromExplicitIndex(KernelApi.nodeQueryIndex(index, queryParam, db), db);
+        return toWeightedNodeResult(db.index().forNodes(index).query(queryParam));    
+    }
 
-        return hits.stream();
+    private Stream<WeightedNodeResult> toWeightedNodeResult(IndexHits<Node> hits) {
+        List<WeightedNodeResult> results = new ArrayList<>(hits.size());
+        while (hits.hasNext()) {
+            try {
+                Node node = hits.next();
+                node.getGraphDatabase();
+                results.add(new WeightedNodeResult(node, (double) hits.currentScore()));
+            } catch(NotFoundException nfe) {
+                // ignore
+            }
+        }
+        return results.stream();
     }
 
 
@@ -242,7 +253,7 @@ public class FreeTextSearch {
     }
 
     private Executor executor() {
-        return db.getDependencyResolver().resolveDependency(JobScheduler.class).executor(GROUP);
+        return Pools.DEFAULT;
     }
 
     static Analyzer analyzer() {

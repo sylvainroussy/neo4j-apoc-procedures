@@ -1,3 +1,4 @@
+lib
 index.html
 docs/guides
 classes
@@ -34,3 +35,4 @@ Thumbs.db
 .cache-main
 .cache-tests
 bin
+hadoop

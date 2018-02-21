@@ -1,23 +1,20 @@
 package apoc.load;
 
-import java.net.URL;
-import java.util.Map;
-
-import apoc.load.LoadJson;
 import apoc.util.TestUtil;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
-
 import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.test.TestGraphDatabaseFactory;
 
-import static apoc.util.TestUtil.testResult;
-import static java.util.Arrays.asList;
+import java.net.URL;
+import java.util.Map;
 
 import static apoc.util.MapUtil.map;
 import static apoc.util.TestUtil.testCall;
+import static apoc.util.TestUtil.testResult;
+import static java.util.Arrays.asList;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 

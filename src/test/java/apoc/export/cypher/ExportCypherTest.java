@@ -45,6 +45,7 @@ public class ExportCypherTest {
             "COMMIT%n");
 
     private static final String EXPECTED_SCHEMA = String.format("BEGIN%n" +
+            "CREATE INDEX ON :`Bar`(`first_name`,`last_name`);%n" +
             "CREATE INDEX ON :`Foo`(`name`);%n" +
             "CREATE CONSTRAINT ON (node:`Bar`) ASSERT node.`name` IS UNIQUE;%n" +
             "CREATE CONSTRAINT ON (node:`UNIQUE IMPORT LABEL`) ASSERT node.`UNIQUE IMPORT ID` IS UNIQUE;%n" +
@@ -56,6 +57,7 @@ public class ExportCypherTest {
             "SCHEMA AWAIT%n");
 
     private static final String EXPECTED_INDEXES_AWAIT = String.format("CALL db.awaitIndex(':`Foo`(`name`)');%n" +
+            "CALL db.awaitIndex(':`Bar`(`first_name`,`last_name`)');%n" +
             "CALL db.awaitIndex(':`Bar`(`name`)');%n");
 
     private static final String EXPECTED_RELATIONSHIPS = String.format("BEGIN%n" +
@@ -82,6 +84,7 @@ public class ExportCypherTest {
             "COMMIT%n");
 
     private static final String EXPECTED_ONLY_SCHEMA_NEO4J_SHELL = String.format("BEGIN%n" +
+            "CREATE INDEX ON :`Bar`(`first_name`,`last_name`);%n" +
             "CREATE INDEX ON :`Foo`(`name`);%n" +
             "CREATE CONSTRAINT ON (node:`Bar`) ASSERT node.`name` IS UNIQUE;%n" +
             "COMMIT%n" +
@@ -117,12 +120,50 @@ public class ExportCypherTest {
                 .setConfig("apoc.export.file.enabled", "true").newGraphDatabase();
         TestUtil.registerProcedure(db, ExportCypher.class, Graphs.class);
         db.execute("CREATE INDEX ON :Foo(name)").close();
+        db.execute("CREATE INDEX ON :Bar(first_name, last_name)").close();
         db.execute("CREATE CONSTRAINT ON (b:Bar) ASSERT b.name IS UNIQUE").close();
         db.execute("CREATE (f:Foo {name:'foo'})-[:KNOWS {since:2016}]->(b:Bar {name:'bar',age:42}),(c:Bar {age:12})").close();
     }
 
     @AfterClass public static void tearDown() {
         db.shutdown();
+    }
+
+
+    @Test public void testExportAllCypherResults() throws Exception {
+        TestUtil.testCall(db, "CALL apoc.export.cypher.all(null,null)", (r) -> {
+            System.out.println(r);
+            assertResults(null, r, "database");
+            assertEquals(EXPECTED_NEO4J_SHELL,r.get("cypherStatements"));
+        });
+    }
+
+    @Test public void testExportAllCypherStreaming() throws Exception {
+        StringBuilder sb=new StringBuilder();
+        TestUtil.testResult(db, "CALL apoc.export.cypher.all(null,{streamStatements:true,batchSize:3})", (res) -> {
+            Map<String, Object> r = res.next();
+            assertEquals(3L, r.get("batchSize"));
+            assertEquals(1L, r.get("batches"));
+            assertEquals(3L, r.get("nodes"));
+            assertEquals(3L, r.get("rows"));
+            assertEquals(0L, r.get("relationships"));
+            assertEquals(4L, r.get("properties"));
+            assertEquals(null, r.get("file"));
+            assertEquals("cypher", r.get("format"));
+            assertEquals(true, ((long) r.get("time")) >= 0);
+            sb.append(r.get("cypherStatements"));
+            r = res.next();
+            System.out.println(r);
+            assertEquals(3L, r.get("batchSize"));
+            assertEquals(2L, r.get("batches"));
+            assertEquals(3L, r.get("nodes"));
+            assertEquals(4L, r.get("rows"));
+            assertEquals(1L, r.get("relationships"));
+            assertEquals(5L, r.get("properties"));
+            assertEquals(true, ((long) r.get("time")) >= 0);
+            sb.append(r.get("cypherStatements"));
+        });
+        assertEquals(EXPECTED_NEO4J_SHELL.replace("LIMIT 20000","LIMIT 3"),sb.toString());
     }
 
     // -- Whole file test -- //
@@ -235,7 +276,7 @@ public class ExportCypherTest {
         assertEquals(3L, r.get("nodes"));
         assertEquals(1L, r.get("relationships"));
         assertEquals(5L, r.get("properties"));
-        assertEquals(output.getAbsolutePath(), r.get("file"));
+        assertEquals(output==null ? null : output.getAbsolutePath(), r.get("file"));
         assertEquals(source + ": nodes(3), rels(1)", r.get("source"));
         assertEquals("cypher", r.get("format"));
         assertEquals(true, ((long) r.get("time")) >= 0);

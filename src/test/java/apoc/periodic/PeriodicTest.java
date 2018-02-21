@@ -17,8 +17,10 @@ import java.util.Map;
 import static apoc.util.TestUtil.testCall;
 import static apoc.util.TestUtil.testResult;
 import static apoc.util.Util.map;
+import static org.hamcrest.CoreMatchers.equalTo;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThat;
 
 public class PeriodicTest {
 
@@ -51,10 +53,11 @@ public class PeriodicTest {
                     assertEquals(0L, row.get("delay"));
                     assertEquals(0L, row.get("rate"));
                 });
-        Thread.sleep(2000);
-        ResourceIterator<Object> it = db.execute("MATCH (:Foo) RETURN COUNT(*) AS c").columnAs("c");
-        assertEquals(1L, it.next());
-        it.close();
+
+        long count = tryReadCount(50, "MATCH (:Foo) RETURN COUNT(*) AS count", 1L);
+
+        assertThat(String.format("Expected %d, got %d ", 1L, count), count, equalTo(1L));
+
         testCall(db, callList, (r) -> assertEquals(true, r.get("done")));
     }
 
@@ -111,6 +114,7 @@ public class PeriodicTest {
             assertEquals(operationsErrors, ((Map) row.get("operations")).get("errors"));
         });
     }
+
     @Test
     public void testPeriodicIterateErrors() throws Exception {
         testResult(db, "CALL apoc.periodic.iterate('UNWIND range(0,99) as id RETURN id', 'CREATE null', {batchSize:10,iterateList:true})", result -> {
@@ -122,18 +126,34 @@ public class PeriodicTest {
             assertEquals(10L, row.get("failedBatches"));
             Map<String, Object> batchErrors = map("org.neo4j.graphdb.TransactionFailureException: Transaction was marked as successful, but unable to commit transaction so rolled back.", 10L);
             assertEquals(batchErrors, ((Map) row.get("batch")).get("errors"));
-            Map<String, Object> operationsErrors = map("Parentheses are required to identify nodes in patterns, i.e. (null) (line 1, column 66 (offset: 65))\n" +
-                    "\"UNWIND {`_batch`} AS `_batch` WITH `_batch`.`id` AS `id`  CREATE null\"\n" +
-                    "                                                                  ^", 10L);
+            Map<String, Object> operationsErrors = map("Parentheses are required to identify nodes in patterns, i.e. (null) (line 1, column 56 (offset: 55))\n" +
+                    "\"UNWIND {_batch} AS _batch WITH _batch.id AS id  CREATE null\"\n" +
+                    "                                                        ^", 10L);
             assertEquals(operationsErrors, ((Map) row.get("operations")).get("errors"));
         });
+    }
+
+    @Test
+    public void testIteratePrefixGiven() throws Exception {
+        db.execute("UNWIND range(1,100) AS x CREATE (:Person{name:'Person_'+x})").close();
+
+        testResult(db, "CALL apoc.periodic.iterate('match (p:Person) return p', 'WITH {p} as p SET p.lastname =p.name REMOVE p.name', {batchSize:10,parallel:true})", result -> {
+            Map<String, Object> row = Iterators.single(result);
+            assertEquals(10L, row.get("batches"));
+            assertEquals(100L, row.get("total"));
+        });
+
+        testCall(db,
+                "MATCH (p:Person) where p.lastname is not null return count(p) as count",
+                row -> assertEquals(100L, row.get("count"))
+        );
     }
 
     @Test
     public void testIterate() throws Exception {
         db.execute("UNWIND range(1,100) AS x CREATE (:Person{name:'Person_'+x})").close();
 
-        testResult(db, "CALL apoc.periodic.iterate('match (p:Person) return p', 'WITH {p} as p SET p.lastname =p.name REMOVE p.name', {batchSize:10,parallel:true})", result -> {
+        testResult(db, "CALL apoc.periodic.iterate('match (p:Person) return p', 'SET p.lastname =p.name REMOVE p.name', {batchSize:10,parallel:true})", result -> {
             Map<String, Object> row = Iterators.single(result);
             assertEquals(10L, row.get("batches"));
             assertEquals(100L, row.get("total"));
@@ -165,7 +185,7 @@ public class PeriodicTest {
     public void testIterateBatch() throws Exception {
         db.execute("UNWIND range(1,100) AS x CREATE (:Person{name:'Person_'+x})").close();
 
-        testResult(db, "CALL apoc.periodic.iterate('match (p:Person) return p', 'UNWIND {_batch} as row WITH row.p as p SET p.lastname = p.name REMOVE p.name', {batchSize:10, iterateList:true, parallel:true})", result -> {
+        testResult(db, "CALL apoc.periodic.iterate('match (p:Person) return p', 'SET p.lastname = p.name REMOVE p.name', {batchSize:10, iterateList:true, parallel:true})", result -> {
             Map<String, Object> row = Iterators.single(result);
             System.out.println(result);
             assertEquals(10L, row.get("batches"));
@@ -286,4 +306,21 @@ public class PeriodicTest {
         });
     }
 
+
+    private long tryReadCount(int maxAttempts, String statement, long expected) throws InterruptedException {
+        int attempts = 0;
+        long count;
+        do {
+            Thread.sleep(100);
+            attempts++;
+            count = readCount(statement);
+        } while (attempts < maxAttempts && count != expected);
+        return count;
+    }
+
+    private long readCount(String statement) {
+        try (ResourceIterator<Long> it = db.execute(statement).columnAs("count")) {
+            return Iterators.single(it);
+        }
+    }
 }

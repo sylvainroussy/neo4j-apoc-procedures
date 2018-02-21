@@ -72,20 +72,23 @@ public class Json {
     }
 
     @Procedure("apoc.convert.toTree")
-    @Description("apoc.convert.toTree([paths]) creates a stream of nested documents representing the at least one root of these paths")
+    @Description("apoc.convert.toTree([paths],[lowerCaseRels=true]) creates a stream of nested documents representing the at least one root of these paths")
     // todo optinally provide root node
-    public Stream<MapResult> toTree(@Name("paths") List<Path> paths) {
+    public Stream<MapResult> toTree(@Name("paths") List<Path> paths, @Name(value = "lowerCaseRels",defaultValue = "true") boolean lowerCaseRels) {
+        if (paths.isEmpty()) return Stream.of(new MapResult(Collections.emptyMap()));
+
         Map<Long, Map<String, Object>> maps = new HashMap<>(paths.size() * 100);
         for (Path path : paths) {
             Iterator<PropertyContainer> it = path.iterator();
             while (it.hasNext()) {
                 Node n = (Node) it.next();
-                Map<String, Object> nMap = maps.computeIfAbsent(n.getId(), (id) -> toMap(n));
+                    Map<String, Object> nMap = maps.computeIfAbsent(n.getId(), (id) -> toMap(n));
                 if (it.hasNext()) {
                     Relationship r = (Relationship) it.next();
                     Node m = r.getOtherNode(n);
                     Map<String, Object> mMap = maps.computeIfAbsent(m.getId(), (id) -> toMap(m));
-                    String typeName = r.getType().name().toLowerCase();
+                    String typeName = r.getType().name();
+                    if (lowerCaseRels) typeName = typeName.toLowerCase();
                     mMap = addRelProperties(mMap, typeName, r);
                     // todo take direction into account and create collection into outgoing direction ??
                     // parent-[:HAS_CHILD]->(child) vs. (parent)<-[:PARENT_OF]-(child)
@@ -98,8 +101,9 @@ public class Json {
         }
         return paths.stream()
                 .map(Path::startNode)
+                .distinct()
                 .map(n -> maps.remove(n.getId()))
-                .filter(m -> m != null)
+                .map(m -> m == null ? Collections.<String,Object>emptyMap() : m)
                 .map(MapResult::new);
     }
 

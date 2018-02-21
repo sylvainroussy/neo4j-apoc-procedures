@@ -2,25 +2,24 @@ package apoc.util;
 
 import apoc.ApocConfiguration;
 import apoc.Pools;
-import apoc.export.util.*; // todo
+import apoc.export.util.CountingInputStream;
 import apoc.path.RelationshipTypeAndDirections;
 import org.neo4j.collection.primitive.PrimitiveLongIterator;
 import org.neo4j.graphdb.*;
+import org.neo4j.graphdb.Node;
 import org.neo4j.helpers.collection.Iterables;
 import org.neo4j.helpers.collection.Pair;
-import org.neo4j.kernel.api.KernelTransaction;
 import org.neo4j.kernel.api.ReadOperations;
 import org.neo4j.kernel.api.Statement;
-import org.neo4j.kernel.api.exceptions.Status;
-import org.neo4j.kernel.impl.core.ThreadToStatementContextBridge;
-import org.neo4j.kernel.internal.GraphDatabaseAPI;
 import org.neo4j.kernel.api.security.SecurityContext;
-import org.neo4j.kernel.api.KernelTransaction;
-import org.neo4j.kernel.api.exceptions.Status;
 import org.neo4j.kernel.impl.core.ThreadToStatementContextBridge;
 import org.neo4j.kernel.internal.GraphDatabaseAPI;
 import org.neo4j.logging.Log;
+import org.neo4j.procedure.TerminationGuard;
+import org.w3c.dom.Document;
 
+import javax.lang.model.SourceVersion;
+import javax.xml.parsers.DocumentBuilder;
 import java.io.*;
 import java.lang.reflect.InvocationTargetException;
 import java.net.*;
@@ -47,7 +46,6 @@ public class Util {
     public static final String NODE_COUNT = "MATCH (n) RETURN count(*) as result";
     public static final String REL_COUNT = "MATCH ()-->() RETURN count(*) as result";
     public static final String COMPILED = "interpreted"; // todo handle enterprise properly
-
 
     public static String labelString(Node n) {
         return StreamSupport.stream(n.getLabels().spliterator(),false).map(Label::name).sorted().collect(Collectors.joining(":"));
@@ -277,7 +275,7 @@ public class Util {
             }
             headers.forEach((k,v) -> con.setRequestProperty(k, v == null ? "" : v.toString()));
         }
-        con.setDoInput(true);
+//        con.setDoInput(true);
         con.setConnectTimeout(toLong(ApocConfiguration.get("http.timeout.connect",10_000)).intValue());
         con.setReadTimeout(toLong(ApocConfiguration.get("http.timeout.read",60_000)).intValue());
         return con;
@@ -301,32 +299,40 @@ public class Util {
        return con.getHeaderField("Location");
     }
 
-    public static CountingInputStream openInputStream(String url, Map<String, Object> headers, String payload) throws IOException {
-        URLConnection con;
-        boolean redirect;
-        do {
-            redirect = false;
-            con = openUrlConnection(url, headers);
-            writePayload(con, payload);
-            String newUrl = handleRedirect(con, url);
-            if (newUrl != null && !url.equals(newUrl)) {
-                url = newUrl;
-                redirect = true;
-                con.getInputStream().close();
-            }
-        } while (redirect);
+    public static CountingInputStream openInputStream(String urlAddress, Map<String, Object> headers, String payload) throws IOException {
+        StreamConnection sc;
+        URL url = new URL(urlAddress);
+        String protocol = url.getProtocol();
+        if(FileUtils.S3_PROTOCOL.equalsIgnoreCase(protocol)) {
+            sc = FileUtils.openS3InputStream(url);
+        } else if(FileUtils.HDFS_PROTOCOL.equalsIgnoreCase(protocol)) {
+            sc = FileUtils.openHdfsInputStream(url);
+        } else {
+            sc = readHttpInputStream(urlAddress, headers, payload);
+        }
 
-        long size = con.getContentLengthLong();
-        InputStream stream = con.getInputStream();
-
-        String encoding = con.getContentEncoding();
-        if ("gzip".equals(encoding) || url.endsWith(".gz")) {
+        String encoding = sc.getEncoding();
+        InputStream stream = sc.getInputStream();
+        if ("gzip".equals(encoding) || urlAddress.endsWith(".gz")) {
             stream = new GZIPInputStream(stream);
         }
         if ("deflate".equals(encoding)) {
             stream = new DeflaterInputStream(stream);
         }
-        return new CountingInputStream(stream, size);
+        return new CountingInputStream(stream, sc.getLength());
+    }
+
+    private static StreamConnection readHttpInputStream(String urlAddress, Map<String, Object> headers, String payload) throws IOException {
+        URLConnection con = openUrlConnection(urlAddress, headers);
+        writePayload(con, payload);
+        String newUrl = handleRedirect(con, urlAddress);
+
+        if (newUrl != null && !urlAddress.equals(newUrl)) {
+            con.getInputStream().close();
+            return readHttpInputStream(newUrl, headers, payload);
+        }
+
+        return new StreamConnection.UrlStreamConnection(con);
     }
 
     public static boolean toBoolean(Object value) {
@@ -532,7 +538,7 @@ public class Util {
     }
 
     public static String quote(String var) {
-        return var.indexOf('`') == -1 ? '`'+var+'`' : var;
+        return SourceVersion.isIdentifier(var) ? var : '`' + var + '`';
     }
 
     public static String param(String var) {
@@ -568,19 +574,21 @@ public class Util {
      * @return
      *
      */
-    public static boolean transactionIsTerminated(GraphDatabaseAPI db) {
-        final KernelTransaction ktx = db.getDependencyResolver()
-                .resolveDependency(ThreadToStatementContextBridge.class)
-                .getKernelTransactionBoundToThisThread(true);
-
-        return ktx.getReasonIfTerminated().isPresent();
+    public static boolean transactionIsTerminated(TerminationGuard db) {
+        try {
+            db.check();
+            return false;
+        } catch (TransactionGuardException | TransactionTerminatedException tge) {
+            return true;
+        }
     }
 
     public static void waitForFutures(List<Future> futures) {
         for (Future future : futures) {
             try {
-                future.get();
+                if (future != null) future.get();
             } catch (InterruptedException | ExecutionException e) {
+                e.printStackTrace();
                 // ignore
             }
         }
@@ -597,6 +605,46 @@ public class Util {
             if (closeable!=null) closeable.close();
         } catch (IOException e) {
             // ignore
+        }
+    }
+
+    public static boolean isNotNullOrEmpty(String s) {
+        return s!=null && s.trim().length()!=0;
+    }
+    public static boolean isNullOrEmpty(String s) {
+        return s==null || s.trim().length()==0;
+    }
+
+    public static Map<String, String> getRequestParameter(String parameters){
+        Map<String, String> params = null;
+
+        if(Objects.nonNull(parameters)){
+            params = new HashMap<>();
+            String[] queryStrings = parameters.split("&");
+            for (String query : queryStrings) {
+                String[] parts = query.split("=");
+                if (parts.length == 2) {
+                    params.put(parts[0], parts[1]);
+                }
+            }
+        }
+        return params;
+    }
+
+    public static boolean classExists(String className) {
+        try {
+            Class.forName(className);
+            return true;
+        } catch(ClassNotFoundException cnfe) {
+            return false;
+        }
+    }
+
+    public static <T> T createInstanceOrNull(String className) {
+        try {
+            return (T)Class.forName(className).newInstance();
+        } catch (IllegalAccessException | InstantiationException | ClassNotFoundException e) {
+            return null;
         }
     }
 }

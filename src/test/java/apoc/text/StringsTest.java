@@ -3,22 +3,20 @@ package apoc.text;
 import apoc.util.TestUtil;
 import org.junit.*;
 import org.junit.rules.ExpectedException;
-import org.neo4j.graphdb.GraphDatabaseService;
-import org.neo4j.graphdb.QueryExecutionException;
+import org.neo4j.graphdb.*;
 import org.neo4j.helpers.collection.Iterators;
 import org.neo4j.test.TestGraphDatabaseFactory;
 
 import static java.lang.Math.toIntExact;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
+
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static apoc.util.MapUtil.map;
 import static apoc.util.TestUtil.testCall;
 import static apoc.util.TestUtil.testResult;
+import static java.util.Arrays.asList;
 import static org.junit.Assert.*;
 
 
@@ -86,12 +84,12 @@ public class StringsTest {
         testCall(db,
                 "RETURN apoc.text.split({text}, {regex}) AS value",
                 map("text", text, "regex", regex),
-                row -> assertEquals(Arrays.asList("1", "2", "3", "4"), row.get("value")));
+                row -> assertEquals(asList("1", "2", "3", "4"), row.get("value")));
 
         testCall(db,
                 "RETURN apoc.text.split({text}, {regex}, 2) AS value",
                 map("text", text, "regex", regex),
-                row -> assertEquals(Arrays.asList("1", "2, 3,4"), row.get("value")));
+                row -> assertEquals(asList("1", "2, 3,4"), row.get("value")));
     }
 
     @Test
@@ -122,7 +120,7 @@ public class StringsTest {
 
     @Test
     public void testJoin() throws Exception {
-        List<String> texts = Arrays.asList("1", "2", "3", "4");
+        List<String> texts = asList("1", "2", "3", "4");
         String delimiter = ",";
         String expected = "1,2,3,4";
 
@@ -134,7 +132,7 @@ public class StringsTest {
 
     @Test
     public void testJoinWithNull() throws Exception {
-        List<String> texts = Arrays.asList("Hello", null);
+        List<String> texts = asList("Hello", null);
         String delimiter = " ";
         String expected = "Hello null";
 
@@ -305,9 +303,9 @@ public class StringsTest {
                 result -> {
                     final List<Object> r = Iterators.single(result.columnAs("result"));
 
-                    List<List<String>> expected = new ArrayList<>(Arrays.asList(
-                            new ArrayList<String>(Arrays.asList("<link xxx1>yyy1</link>", "xxx1", "yyy1")),
-                            new ArrayList<String>(Arrays.asList("<link xxx2>yyy2</link>", "xxx2", "yyy2"))
+                    List<List<String>> expected = new ArrayList<>(asList(
+                            new ArrayList<String>(asList("<link xxx1>yyy1</link>", "xxx1", "yyy1")),
+                            new ArrayList<String>(asList("<link xxx2>yyy2</link>", "xxx2", "yyy2"))
                     ));
                     assertTrue(r.containsAll(expected));
                 });
@@ -465,5 +463,100 @@ public class StringsTest {
                 map("text", text),
                 row -> assertEquals("neo4j", row.get("value").toString())
         );
+    }
+
+    @Test
+    public void testSorensenDiceSimilarity() {
+        String text1 = "belly";
+        String text2 = "jolly";
+
+        testCall(db,
+                 "RETURN apoc.text.sorensenDiceSimilarity({text1}, {text2}) AS value",
+                 map("text1",text1,"text2", text2),
+                 row -> assertEquals(0.5, row.get("value")));
+    }
+
+    @Test
+    public void testSorensenDiceSimilarityWithTurkishLocale() {
+        String text1 = "halım";
+        String text2 = "halim";
+        String languageTag = "tr-TR";
+
+        testCall(db,
+                 "RETURN apoc.text.sorensenDiceSimilarity({text1}, {text2}, {languageTag}) AS value",
+                 map("text1",text1,"text2", text2, "languageTag", languageTag),
+                 row -> assertEquals(0.5, row.get("value")));
+    }
+
+
+    @Test
+    public void testHexvalue() {
+        testCall(db,  "RETURN [x IN {values} | apoc.text.hexValue(x)] as value",  
+                      map("values", Arrays.<Long>asList(null,0L,1L,255L,65534L,65536L,305419896L,2309737967L,4294967294L,187723572702975L)),
+                      row -> assertEquals(Arrays.<String>asList(null,"0000","0001","00FF","FFFE","00010000","12345678","89ABCDEF","FFFFFFFE","0000AABBCCDDEEFF"), row.get("value")));
+    }
+
+    @Test
+    public void testCode() {
+        testCall(db, "RETURN [x IN  [-1,null,65536] | apoc.text.code(x)] AS value", row -> assertEquals(asList(null,null,null), row.get("value")));
+        testCall(db, "RETURN [x IN  [84,233,36,8482,32,20013,1055,46] | apoc.text.code(x)] AS value", row -> assertEquals(asList((String[])"Té$™ 中П.".split("")), row.get("value")));
+    }
+    @Test
+    public void testCharAt() {
+        testCall(db,  "RETURN apoc.text.charAt({text}, 0) as value",  map("text", ""), row -> assertEquals(null, row.get("value")));
+        testCall(db,  "RETURN apoc.text.charAt({text}, -1) as value",  map("text", "Té$™ 中П."), row -> assertEquals(null, row.get("value")));
+        testCall(db,  "RETURN apoc.text.charAt({text}, 0) as value",  map("text", "Té$™ 中П."), row -> assertEquals(84L, row.get("value")));
+        testCall(db,  "RETURN apoc.text.charAt({text}, 1) as value",  map("text", "Té$™ 中П."), row -> assertEquals(233L, row.get("value")));
+        testCall(db,  "RETURN apoc.text.charAt({text}, 2) as value",  map("text", "Té$™ 中П."), row -> assertEquals(36L, row.get("value")));
+        testCall(db,  "RETURN apoc.text.charAt({text}, 3) as value",  map("text", "Té$™ 中П."), row -> assertEquals(8482L, row.get("value")));
+        testCall(db,  "RETURN apoc.text.charAt({text}, 4) as value",  map("text", "Té$™ 中П."), row -> assertEquals(32L, row.get("value")));
+        testCall(db,  "RETURN apoc.text.charAt({text}, 5) as value",  map("text", "Té$™ 中П."), row -> assertEquals(20013L, row.get("value")));
+        testCall(db,  "RETURN apoc.text.charAt({text}, 6) as value",  map("text", "Té$™ 中П."), row -> assertEquals(1055L, row.get("value")));
+        testCall(db,  "RETURN apoc.text.charAt({text}, 7) as value",  map("text", "Té$™ 中П."), row -> assertEquals(46L, row.get("value")));
+        testCall(db,  "RETURN apoc.text.charAt({text}, 8) as value",  map("text", "Té$™ 中П."), row -> assertEquals(null, row.get("value")));
+    }
+
+    @Test
+    public void testHexCharAt() {
+        testCall(db,  "RETURN apoc.text.hexCharAt({text}, 0) as value",  map("text", ""), row -> assertEquals(null, row.get("value")));
+        testCall(db,  "RETURN apoc.text.hexCharAt({text}, -1) as value",  map("text", "Té$™ 中П."), row -> assertEquals(null, row.get("value")));
+        testCall(db,  "RETURN apoc.text.hexCharAt({text}, 0) as value",  map("text", "Té$™ 中П."), row -> assertEquals("0054", row.get("value")));
+        testCall(db,  "RETURN apoc.text.hexCharAt({text}, 1) as value",  map("text", "Té$™ 中П."), row -> assertEquals("00E9", row.get("value")));
+        testCall(db,  "RETURN apoc.text.hexCharAt({text}, 2) as value",  map("text", "Té$™ 中П."), row -> assertEquals("0024", row.get("value")));
+        testCall(db,  "RETURN apoc.text.hexCharAt({text}, 3) as value",  map("text", "Té$™ 中П."), row -> assertEquals("2122", row.get("value")));
+        testCall(db,  "RETURN apoc.text.hexCharAt({text}, 4) as value",  map("text", "Té$™ 中П."), row -> assertEquals("0020", row.get("value")));
+        testCall(db,  "RETURN apoc.text.hexCharAt({text}, 5) as value",  map("text", "Té$™ 中П."), row -> assertEquals("4E2D", row.get("value")));
+        testCall(db,  "RETURN apoc.text.hexCharAt({text}, 6) as value",  map("text", "Té$™ 中П."), row -> assertEquals("041F", row.get("value")));
+        testCall(db,  "RETURN apoc.text.hexCharAt({text}, 7) as value",  map("text", "Té$™ 中П."), row -> assertEquals("002E", row.get("value")));
+        testCall(db,  "RETURN apoc.text.hexCharAt({text}, 8) as value",  map("text", "Té$™ 中П."), row -> assertEquals(null, row.get("value")));
+    }
+
+    @Test
+    public void testToCypher() throws Exception {
+        try (Transaction tx = db.beginTx()) {
+            String stmtmt = "CREATE (f:Foo {foo:'foo',answer:42})-[fb:`F B` {fb:'fb',`an swer`:31}]->(b:`B ar` {bar:'bar',answer:41}) RETURN {f:f,fb:fb,b:b} AS data";
+            Map<String, PropertyContainer> data = (Map<String, PropertyContainer>) db.execute(stmtmt).columnAs("data").next();
+            testCall(db, "RETURN apoc.text.toCypher($v) AS value", map("v", data.get("f")), (row) -> assertEquals("(:Foo {answer:42,foo:'foo'})", row.get("value")));
+            testCall(db, "RETURN apoc.text.toCypher($v,{node:'f'}) AS value", map("v", data.get("f")), (row) -> assertEquals("(f:Foo {answer:42,foo:'foo'})", row.get("value")));
+            testCall(db, "RETURN apoc.text.toCypher($v,{skipKeys:['answer']}) AS value", map("v", data.get("f")), (row) -> assertEquals("(:Foo {foo:'foo'})", row.get("value")));
+            testCall(db, "RETURN apoc.text.toCypher($v,{keepKeys:['answer']}) AS value", map("v", data.get("f")), (row) -> assertEquals("(:Foo {answer:42})", row.get("value")));
+            testCall(db, "RETURN apoc.text.toCypher($v,{keepValues:[42]}) AS value", map("v", data.get("f")), (row) -> assertEquals("(:Foo {answer:42})", row.get("value")));
+            testCall(db, "RETURN apoc.text.toCypher($v,{skipValues:[42]}) AS value", map("v", data.get("f")), (row) -> assertEquals("(:Foo {foo:'foo'})", row.get("value")));
+            testCall(db, "RETURN apoc.text.toCypher($v) AS value", map("v", data.get("b")), (row) -> assertEquals("(:`B ar` {answer:41,bar:'bar'})", row.get("value")));
+            testCall(db, "RETURN apoc.text.toCypher($v) AS value", map("v", data.get("fb")),
+                    (row) -> assertEquals("(:Foo {answer:42,foo:'foo'})-[:`F B` {`an swer`:31,fb:'fb'}]->(:`B ar` {answer:41,bar:'bar'})", row.get("value")));
+
+            testCall(db, "RETURN apoc.text.toCypher($v,{start:'f',end:'b', relationship:'fb'}) AS value", map("v", data.get("fb")),
+                    (row) -> assertEquals("(f)-[fb:`F B` {`an swer`:31,fb:'fb'}]->(b)", row.get("value")));
+
+            testCall(db, "RETURN apoc.text.toCypher($v) AS value", map("v", data.get("b").getAllProperties()), (row) -> assertEquals("{answer:41,bar:'bar'}", row.get("value")));
+            testCall(db, "RETURN apoc.text.toCypher($v) AS value", map("v", data.get("b").getProperties("answer", "bar")), (row) -> assertEquals("{answer:41,bar:'bar'}", row.get("value")));
+            testCall(db, "RETURN apoc.text.toCypher($v) AS value", map("v", asList(41,"bar",false,null)), (row) -> assertEquals("[41,'bar',false,null]", row.get("value")));
+            testCall(db, "RETURN apoc.text.toCypher($v) AS value", map("v", 41), (row) -> assertEquals("41", row.get("value")));
+            testCall(db, "RETURN apoc.text.toCypher($v) AS value", map("v", "bar"), (row) -> assertEquals("'bar'", row.get("value")));
+            testCall(db, "RETURN apoc.text.toCypher($v) AS value", map("v", null), (row) -> assertEquals("null", row.get("value")));
+            testCall(db, "RETURN apoc.text.toCypher($v) AS value", map("v", true), (row) -> assertEquals("true", row.get("value")));
+            testCall(db, "RETURN apoc.text.toCypher($v) AS value", map("v", false), (row) -> assertEquals("false", row.get("value")));
+        }
     }
 }
